@@ -74,7 +74,7 @@ use crate::path_segment::PathSegment;
 use crate::path_to_path_data;
 
 use glam::{BVec2, DVec2, I64Vec2};
-use roots::{Roots, find_roots_cubic};
+use roots::{find_roots_cubic, find_roots_quadratic};
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 use slotmap::{SlotMap, new_key_type};
@@ -868,20 +868,6 @@ fn face_to_polygon(face: &DualGraphVertex, edges: &SlotMap<DualEdgeKey, DualGrap
 		.collect()
 }
 
-fn interval_crosses_point(a: f64, b: f64, p: f64) -> bool {
-	let dy1 = a >= p;
-	let dy2 = b < p;
-	dy1 == dy2
-}
-
-fn line_segment_intersects_horizontal_ray(a: DVec2, b: DVec2, point: DVec2) -> bool {
-	if !interval_crosses_point(a.y, b.y, point.y) {
-		return false;
-	}
-	let x = crate::math::lin_map(point.y, a.y, b.y, a.x, b.x);
-	x >= point.x
-}
-
 #[cfg(feature = "logging")]
 fn compute_point_winding(polygon: &[DVec2], tested_point: DVec2) -> i32 {
 	if polygon.len() <= 2 {
@@ -1236,107 +1222,96 @@ fn bounding_box_intersects_horizontal_ray(bounding_box: &Aabb, point: DVec2) -> 
 	bounding_box.right() >= point[0] && (bounding_box.top()..bounding_box.bottom()).contains(&point[1])
 }
 
-#[derive(Copy, Clone)]
-struct IntersectionSegment {
-	bounding_box: Aabb,
-	seg: PathSegment,
-}
-
-pub fn path_segment_horizontal_ray_intersection_count(orig_seg: &PathSegment, point: DVec2) -> usize {
+pub fn path_segment_horizontal_ray_intersection_count(orig_seg: &PathSegment, point: DVec2) -> isize {
 	let total_bounding_box = orig_seg.approx_bounding_box();
 	if !bounding_box_intersects_horizontal_ray(&total_bounding_box, point) {
 		return 0;
 	}
 
 	match orig_seg {
-		PathSegment::Cubic(..) => cubic_bezier_horizontal_ray_intersection_count(orig_seg, point),
-		_ => fallback_intersection_count(orig_seg, total_bounding_box, point),
+		PathSegment::Cubic(..) => cubic_not_monotonic(orig_seg, point),
+		// This is kind of inefficient but I can't really be bothered to implement this
+		&PathSegment::Quadratic(p0, p1, p2) => cubic_not_monotonic(&PathSegment::Cubic(p0, (p0 + 2. * p1) / 3., (p2 + 2. * p1) / 3., p2), point),
+		&PathSegment::Line(p0, p1) => cubic_not_monotonic(&PathSegment::Cubic(p0, (p0 * 2. + p1) / 3., (p1 * 2. + p0) / 3., p1), point),
+		// I don't know anything about any other path segments :(
+		_ => panic!("Invalid curve type"),
 	}
 }
 
-fn cubic_bezier_horizontal_ray_intersection_count(cubic: &PathSegment, point: DVec2) -> usize {
-	let y = point.y;
-	let PathSegment::Cubic(p0, p1, p2, p3) = cubic else { unreachable!() };
+/// Finding cubic ray intersections between `cubic`` and a +x ray from `point``
+fn cubic_not_monotonic(cubic: &PathSegment, point: DVec2) -> isize {
+	fn consider_monotonic([p0, p1, p2, p3]: [DVec2; 4]) -> isize {
+		if p0.y == p3.y {
+			return 0; // Vertical lines don't matter to me
+		}
+		let is_downward_curve = p0.y > p3.y;
 
-	// Transform the curve so that the horizontal line is at y = 0
-	let a = -p0.y + 3.0 * p1.y - 3.0 * p2.y + p3.y;
-	let b = 3.0 * p0.y - 6.0 * p1.y + 3.0 * p2.y;
-	let c = -3.0 * p0.y + 3.0 * p1.y;
-	let d = p0.y - y;
-
-	let roots = find_roots_cubic(a, b, c, d);
-
-	let mut count = 0;
-	match roots {
-		Roots::Three(roots) => {
-			for &t in roots.iter() {
-				if (0.0..=1.0).contains(&t) {
-					let x = cubic.sample_at(t).x;
-					if x > point.x {
-						count += 1;
-					}
-				}
+		// Curves fully above or below the curve don't matter to me (curves are monotonic checking is simple and fun!)
+		if is_downward_curve {
+			if p0.y <= 0. || p3.y > 0. {
+				return 0;
+			}
+		} else {
+			if p3.y <= 0. || p0.y > 0. {
+				return 0;
 			}
 		}
-		Roots::Two(roots) => {
-			for &t in roots.iter() {
-				if (0.0..=1.0).contains(&t) {
-					let x = cubic.sample_at(t).x;
-					if x > point.x {
-						count += 1;
-					}
-				}
+
+		// Calculate roots for y
+		let a = -p0 + 3.0 * p1 - 3.0 * p2 + p3;
+		let b = 3.0 * p0 - 6.0 * p1 + 3.0 * p2;
+		let c = -3.0 * p0 + 3.0 * p1;
+		let d = p0;
+		let roots = find_roots_cubic(a.y, b.y, c.y, d.y);
+
+		// Filter t values close to the 0..1 range (clamping as necessary)
+		let mut found_valid = false;
+		for &t_with_errors in roots.as_ref() {
+			let t = t_with_errors.clamp(0., 1.);
+			if (t_with_errors - t).abs() > 1e-6 {
+				continue; // Not close to the 0..1 range
 			}
-		}
-		Roots::One(roots) => {
-			for &t in roots.iter() {
-				if (0.0..=1.0).contains(&t) {
-					let x = cubic.sample_at(t).x;
-					if x > point.x {
-						count += 1;
-					}
-				}
+
+			let x_coord = a.x * t * t * t + b.x * t * t + c.x * t + d.x;
+			if x_coord < 0. {
+				continue; // Left of the point
 			}
+
+			found_valid = true;
 		}
-		_ => {}
+
+		// Monotonic so only crosses once
+		if found_valid { if is_downward_curve { 1 } else { -1 } } else { 0 }
 	}
 
-	count
-}
+	let &PathSegment::Cubic(p0, p1, p2, p3) = cubic else { unreachable!() };
 
-fn fallback_intersection_count(orig_seg: &PathSegment, bounding_box: Aabb, point: DVec2) -> usize {
-	// Existing implementation for non-cubic segments
-	let mut segments = vec![IntersectionSegment { bounding_box, seg: *orig_seg }];
+	// Get the derivative
+	let d0 = 3. * (p1 - p0);
+	let d1 = 3. * (p2 - p1);
+	let d2 = 3. * (p3 - p2);
+	let quadratic_derivative = PathSegment::Quadratic(d0, d1, d2);
+
+	// Get the roots of the y compoment of the derivate
+	let roots = find_roots_quadratic(d0.y - 2. * d1.y + d2.y, -2. * d0.y + 2. * d1.y, d0.y);
+
+	// Split the curve into monotonic pieces
+	let mut t0 = 0.;
 	let mut count = 0;
-	let mut next_segments = Vec::new();
+	for t1 in roots.as_ref().iter().copied().filter(|x| (0.0..1.0).contains(x)).chain([1.]) {
+		// Split from t0 to t1
+		let p0 = cubic.sample_at(t0);
+		let p3 = cubic.sample_at(t1);
+		let scale = (t1 - t0) * (1.0 / 3.0);
+		let p1 = p0 + scale * quadratic_derivative.sample_at(t0);
+		let p2 = p3 - scale * quadratic_derivative.sample_at(t1);
 
-	while !segments.is_empty() {
-		next_segments.clear();
-		for segment in segments.iter() {
-			if bounding_box_max_extent(&segment.bounding_box) < EPS.linear {
-				if line_segment_intersects_horizontal_ray(segment.seg.start(), segment.seg.end(), point) {
-					count += 1;
-				}
-			} else {
-				let split = &segment.seg.split_at(0.5);
-				let bounding_box0 = split.0.bounding_box();
-				let bounding_box1 = split.1.bounding_box();
-				if bounding_box_intersects_horizontal_ray(&bounding_box0, point) {
-					next_segments.push(IntersectionSegment {
-						bounding_box: bounding_box0,
-						seg: split.0,
-					});
-				}
-				if bounding_box_intersects_horizontal_ray(&bounding_box1, point) {
-					next_segments.push(IntersectionSegment {
-						bounding_box: bounding_box1,
-						seg: split.1,
-					});
-				}
-			}
-		}
-		std::mem::swap(&mut next_segments, &mut segments);
+		// Considering monotonic subsegment from t {t0}..{t1} with points {p0} {p1} {p2} {p3}
+		count += consider_monotonic([p0, p1, p2, p3].map(|control| control - point));
+
+		t0 = t1;
 	}
+
 	count
 }
 

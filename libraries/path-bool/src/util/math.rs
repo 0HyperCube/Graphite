@@ -1,10 +1,6 @@
 use glam::{DVec2, FloatExt};
 pub use std::f64::consts::PI;
 
-pub fn lin_map(value: f64, in_min: f64, in_max: f64, out_min: f64, out_max: f64) -> f64 {
-	((value - in_min) / (in_max - in_min)) * (out_max - out_min) + out_min
-}
-
 pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
 	a.lerp(b, t)
 }
