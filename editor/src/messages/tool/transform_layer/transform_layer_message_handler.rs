@@ -12,7 +12,7 @@ use crate::messages::tool::common_functionality::shapes::shape_utility::format_r
 use crate::messages::tool::tool_messages::select_tool;
 use crate::messages::tool::tool_messages::tool_prelude::Key;
 use crate::messages::tool::utility_types::{ToolData, ToolType};
-use glam::{DAffine2, DVec2, IVec2};
+use glam::{DAffine2, DVec2};
 use graphene_std::renderer::Quad;
 use graphene_std::vector::click_target::ClickTargetType;
 use graphene_std::vector::misc::ManipulatorPointId;
@@ -95,8 +95,6 @@ pub struct TransformLayerMessageHandler {
 
 	// Path tool (ghost outlines showing pre-transform geometry)
 	ghost_outline: Vec<(Vec<ClickTargetType>, DAffine2)>,
-
-	original_artboard_bounds: HashMap<LayerNodeIdentifier, [DVec2; 2]>,
 }
 
 #[message_handler_data]
@@ -117,17 +115,12 @@ impl MessageHandler<TransformLayerMessage, TransformLayerMessageContext<'_>> for
 		let using_artboard_tool = tool_data.active_tool_type == ToolType::Artboard;
 
 		// TODO: Add support for transforming layer not in the document network
-		let mut selected_layers = document
+		let selected_layers = document
 			.network_interface
 			.selected_nodes()
 			.selected_layers(document.metadata())
 			.filter(|&layer| document.network_interface.is_visible(&layer.to_node(), &[]) && !document.network_interface.is_locked(&layer.to_node(), &[]))
 			.collect::<Vec<_>>();
-
-		// Ensure only artboard layers are transformed when using the Artboard tool
-		if using_artboard_tool {
-			selected_layers.retain(|layer| document.network_interface.is_artboard(&layer.to_node(), &[]));
-		}
 
 		let mut selected = Selected::new(
 			&mut self.original_transforms,
@@ -144,9 +137,6 @@ impl MessageHandler<TransformLayerMessage, TransformLayerMessageContext<'_>> for
 		let mut begin_operation = |operation: TransformOperation, typing: &mut Typing, mouse_position: &mut DVec2, start_mouse: &mut DVec2, transform: &mut DAffine2| {
 			if operation != TransformOperation::None {
 				selected.revert_operation();
-				if using_artboard_tool {
-					Self::revert_artboards_to_original_bounds(&self.original_artboard_bounds, selected.responses);
-				}
 				typing.clear();
 			}
 
@@ -210,8 +200,6 @@ impl MessageHandler<TransformLayerMessage, TransformLayerMessageContext<'_>> for
 
 			selected.responses.add(DocumentMessage::StartTransaction);
 		};
-
-		let mut update_artboard_transform = false;
 
 		match message {
 			// Overlays
@@ -326,7 +314,6 @@ impl MessageHandler<TransformLayerMessage, TransformLayerMessageContext<'_>> for
 				if final_transform {
 					self.transform_operation = TransformOperation::None;
 					self.operation_count = 0;
-					self.original_artboard_bounds.clear();
 				}
 
 				if using_pen_tool {
@@ -413,18 +400,6 @@ impl MessageHandler<TransformLayerMessage, TransformLayerMessageContext<'_>> for
 					return;
 				}
 				let chain_operation = self.transform_operation != TransformOperation::None;
-				// Prepare artboard bounds
-				if using_artboard_tool && !chain_operation {
-					self.original_artboard_bounds.clear();
-					for &layer in &selected_layers {
-						if !document.network_interface.is_artboard(&layer.to_node(), &[]) {
-							continue;
-						}
-						if let Some(bounds) = document.metadata().bounding_box_document(layer) {
-							self.original_artboard_bounds.insert(layer, bounds);
-						}
-					}
-				}
 				let selected_points: Vec<&ManipulatorPointId> = shape_editor.selected_points().collect();
 				let selected_segments = shape_editor.selected_segments().collect::<Vec<_>>();
 
@@ -531,7 +506,6 @@ impl MessageHandler<TransformLayerMessage, TransformLayerMessageContext<'_>> for
 					responses.add(ToolMessage::UpdateHints);
 				} else {
 					selected.original_transforms.clear();
-					self.original_artboard_bounds.clear();
 					self.typing.clear();
 					self.transform_operation = TransformOperation::None;
 
@@ -548,12 +522,10 @@ impl MessageHandler<TransformLayerMessage, TransformLayerMessageContext<'_>> for
 			TransformLayerMessage::ConstrainX => {
 				self.state.is_transforming_in_local_space = self.transform_operation.constrain_axis(Axis::X, &mut selected, &self.state, document);
 				self.transform_operation.grs_typed(self.typing.evaluate(), &mut selected, &self.state, document);
-				update_artboard_transform = true;
 			}
 			TransformLayerMessage::ConstrainY => {
 				self.state.is_transforming_in_local_space = self.transform_operation.constrain_axis(Axis::Y, &mut selected, &self.state, document);
 				self.transform_operation.grs_typed(self.typing.evaluate(), &mut selected, &self.state, document);
-				update_artboard_transform = true;
 			}
 			TransformLayerMessage::PointerMove { slow_key, increments_key } => {
 				self.slow = input.keyboard.get(slow_key as usize);
@@ -616,7 +588,6 @@ impl MessageHandler<TransformLayerMessage, TransformLayerMessageContext<'_>> for
 						}
 					};
 				}
-				update_artboard_transform = self.transform_operation != TransformOperation::None;
 
 				self.mouse_position = input.mouse.position;
 			}
@@ -630,18 +601,15 @@ impl MessageHandler<TransformLayerMessage, TransformLayerMessageContext<'_>> for
 					self.typing.type_negate();
 				}
 				self.transform_operation.grs_typed(self.typing.type_backspace(), &mut selected, &self.state, document);
-				update_artboard_transform = true;
 			}
 			TransformLayerMessage::TypeDecimalPoint => {
 				if self.transform_operation.can_begin_typing() {
 					self.transform_operation.grs_typed(self.typing.type_decimal_point(), &mut selected, &self.state, document);
-					update_artboard_transform = true;
 				}
 			}
 			TransformLayerMessage::TypeDigit { digit } => {
 				if self.transform_operation.can_begin_typing() {
 					self.transform_operation.grs_typed(self.typing.type_number(digit), &mut selected, &self.state, document);
-					update_artboard_transform = true;
 				}
 			}
 			TransformLayerMessage::TypeNegate => {
@@ -649,15 +617,10 @@ impl MessageHandler<TransformLayerMessage, TransformLayerMessageContext<'_>> for
 					self.transform_operation.negate(&mut selected, &self.state, document);
 				}
 				self.transform_operation.grs_typed(self.typing.type_negate(), &mut selected, &self.state, document);
-				update_artboard_transform = true;
 			}
 			TransformLayerMessage::SetPivotGizmo { pivot_gizmo } => {
 				self.pivot_gizmo = pivot_gizmo;
 			}
-		}
-
-		if using_artboard_tool && update_artboard_transform {
-			Self::apply_artboard_bounds_transform(self.transform_operation, &self.state, &self.original_artboard_bounds, document, responses);
 		}
 	}
 
@@ -688,49 +651,6 @@ impl MessageHandler<TransformLayerMessage, TransformLayerMessageContext<'_>> for
 }
 
 impl TransformLayerMessageHandler {
-	fn apply_artboard_bounds_transform(
-		transform_operation: TransformOperation,
-		state: &TransformationState,
-		original_artboard_bounds: &HashMap<LayerNodeIdentifier, [DVec2; 2]>,
-		document: &DocumentMessageHandler,
-		responses: &mut VecDeque<Message>,
-	) {
-		if original_artboard_bounds.is_empty() || transform_operation == TransformOperation::None {
-			return;
-		}
-
-		// Build the transform chain
-		let inner = match transform_operation {
-			TransformOperation::Grabbing(translation) => DAffine2::from_translation(translation.to_dvec(state, document)),
-			TransformOperation::Scaling(scale) => DAffine2::from_scale(scale.to_dvec(state.is_rounded_to_intervals)),
-			_ => DAffine2::IDENTITY,
-		};
-		let normalized_transform = state.local_to_viewport_transform();
-		let local_viewport_transform = normalized_transform * inner * normalized_transform.inverse();
-		let pivot_translation = DAffine2::from_translation(state.pivot_viewport(document));
-		let viewport_transform = pivot_translation * local_viewport_transform * pivot_translation.inverse();
-		let document_to_viewport = document.metadata().document_to_viewport;
-		let document_transform = document_to_viewport.inverse() * viewport_transform * document_to_viewport;
-
-		// Apply transform to each artboard and send resize messages
-		for (&layer, &original_bounds) in original_artboard_bounds {
-			let new_top_left = document_transform.transform_point2(original_bounds[0]);
-			let new_bottom_right = document_transform.transform_point2(original_bounds[1]);
-			let location = new_top_left.min(new_bottom_right).round().as_ivec2();
-			let dimensions = (new_bottom_right - new_top_left).abs().round().as_ivec2().max(IVec2::ONE);
-			responses.add(GraphOperationMessage::ResizeArtboard { layer, location, dimensions });
-		}
-	}
-
-	// Reset artboards to their original bounds
-	fn revert_artboards_to_original_bounds(original_artboard_bounds: &HashMap<LayerNodeIdentifier, [DVec2; 2]>, responses: &mut VecDeque<Message>) {
-		for (&layer, &original_bounds) in original_artboard_bounds {
-			let location = original_bounds[0].min(original_bounds[1]).round().as_ivec2();
-			let dimensions = (original_bounds[1] - original_bounds[0]).abs().round().as_ivec2().max(IVec2::ONE);
-			responses.add(GraphOperationMessage::ResizeArtboard { layer, location, dimensions });
-		}
-	}
-
 	pub fn is_transforming(&self) -> bool {
 		self.transform_operation != TransformOperation::None
 	}

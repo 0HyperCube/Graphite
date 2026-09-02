@@ -38,6 +38,7 @@ pub struct InitialPoints {
 pub enum OriginalTransforms {
 	Layer(HashMap<LayerNodeIdentifier, DAffine2>),
 	Path(HashMap<LayerNodeIdentifier, InitialPoints>),
+	Artboards(HashMap<LayerNodeIdentifier, [DVec2; 2]>),
 }
 impl Default for OriginalTransforms {
 	fn default() -> Self {
@@ -49,6 +50,16 @@ impl OriginalTransforms {
 		match self {
 			OriginalTransforms::Layer(layer_map) => layer_map.clear(),
 			OriginalTransforms::Path(path_map) => path_map.clear(),
+			OriginalTransforms::Artboards(artboard_map) => artboard_map.clear(),
+		}
+	}
+
+	#[must_use]
+	pub fn is_empty(&self) -> bool {
+		match self {
+			OriginalTransforms::Layer(layer_map) => layer_map.is_empty(),
+			OriginalTransforms::Path(path_map) => path_map.is_empty(),
+			OriginalTransforms::Artboards(artboard_map) => artboard_map.is_empty(),
 		}
 	}
 
@@ -125,6 +136,19 @@ impl OriginalTransforms {
 						.collect();
 
 					path_map.insert(layer, InitialPoints { anchors, handles });
+				}
+			}
+			Self::Artboards(original_artboard_bounds) => {
+				original_artboard_bounds.retain(|layer, _| selected.contains(layer));
+
+				for &layer in selected {
+					if !network_interface.is_artboard(&layer.to_node(), &[]) {
+						original_artboard_bounds.remove(&layer);
+						continue;
+					}
+					original_artboard_bounds
+						.entry(layer)
+						.or_insert_with(|| network_interface.document_metadata().bounding_box_document(layer).unwrap_or_default());
 				}
 			}
 		}
@@ -508,9 +532,15 @@ impl<'a> Selected<'a> {
 		tool_type: &'a ToolType,
 		pen_handle: Option<&'a mut DVec2>,
 	) -> Self {
-		// For Select, Shape, and Artboard tools, switch to layer-based transforms if currently initialized as empty path transforms
-		if (*tool_type == ToolType::Select || *tool_type == ToolType::Shape || *tool_type == ToolType::Artboard) && (*original_transforms == OriginalTransforms::Path(HashMap::new())) {
-			*original_transforms = OriginalTransforms::Layer(HashMap::new());
+		// If we've not properly chosen the type then select one appropriate to the tool
+		if original_transforms.is_empty() {
+			if matches!(tool_type, ToolType::Select | ToolType::Shape) {
+				*original_transforms = OriginalTransforms::Layer(Default::default());
+			} else if matches!(tool_type, ToolType::Artboard) {
+				*original_transforms = OriginalTransforms::Artboards(Default::default());
+			} else {
+				*original_transforms = OriginalTransforms::Path(Default::default());
+			}
 		}
 
 		original_transforms.update(selected, network_interface, shape_editor);
@@ -616,6 +646,20 @@ impl<'a> Selected<'a> {
 		}
 	}
 
+	fn transform_artboard(document_metadata: &DocumentMetadata, layer: LayerNodeIdentifier, original_bounds: Option<&[DVec2; 2]>, transformation: DAffine2, responses: &mut VecDeque<Message>) {
+		let Some(original_bounds) = original_bounds else { return };
+
+		let document_to_viewport = document_metadata.document_to_viewport;
+		let document_transform = document_to_viewport.inverse() * transformation * document_to_viewport;
+
+		// Apply transform to each artboard and send resize messages
+		let new_top_left = document_transform.transform_point2(original_bounds[0]);
+		let new_bottom_right = document_transform.transform_point2(original_bounds[1]);
+		let location = new_top_left.min(new_bottom_right).round();
+		let dimensions = (new_bottom_right - new_top_left).abs().round().max(DVec2::ONE);
+		responses.add(GraphOperationMessage::ResizeArtboard { layer, location, dimensions });
+	}
+
 	pub fn apply_transform_pen(&mut self, transformation: DAffine2) {
 		if let Some(pen_handle) = &self.pen_handle {
 			let final_position = transformation.transform_point2(**pen_handle);
@@ -630,10 +674,6 @@ impl<'a> Selected<'a> {
 
 		// TODO: Cache the result of `shallowest_unique_layers` to avoid this heavy computation every frame of movement, see https://github.com/GraphiteEditor/Graphite/pull/481
 		for layer in self.network_interface.shallowest_unique_layers(&[]) {
-			// Artboards are resized via ResizeArtboard messages in the transform layer handler
-			if *self.tool_type == ToolType::Artboard && self.network_interface.is_artboard(&layer.to_node(), &[]) {
-				continue;
-			}
 			match &mut self.original_transforms {
 				OriginalTransforms::Layer(layer_transforms) => Self::transform_layer(self.network_interface.document_metadata(), layer, layer_transforms.get(&layer), transformation, self.responses),
 				OriginalTransforms::Path(path_transforms) => {
@@ -641,6 +681,7 @@ impl<'a> Selected<'a> {
 						Self::transform_path(self.network_interface.document_metadata(), layer, initial_points, transformation, self.responses, transform_operation)
 					}
 				}
+				OriginalTransforms::Artboards(bounds) => Self::transform_artboard(self.network_interface.document_metadata(), layer, bounds.get(&layer), transformation, self.responses),
 			}
 		}
 	}
@@ -684,6 +725,13 @@ impl<'a> Selected<'a> {
 								self.responses.add(GraphOperationMessage::Vector { layer, modification_type });
 							}
 						}
+					}
+				}
+				OriginalTransforms::Artboards(original_artboard_bounds) => {
+					for (&layer, &original_bounds) in original_artboard_bounds {
+						let location = original_bounds[0].min(original_bounds[1]).round();
+						let dimensions = (original_bounds[1] - original_bounds[0]).abs().round();
+						self.responses.add(GraphOperationMessage::ResizeArtboard { layer, location, dimensions });
 					}
 				}
 			}
