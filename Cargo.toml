@@ -35,6 +35,7 @@ members = [
 	"tools/third-party-licenses",
 	"tools/editor-message-tree",
 	"tools/node-docs",
+	"tools/svg-import-tests",
 ]
 default-members = [
 	"editor",

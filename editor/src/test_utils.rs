@@ -10,6 +10,7 @@ use crate::node_graph_executor::Instrumented;
 use crate::node_graph_executor::NodeRuntime;
 use crate::test_utils::test_prelude::LayerNodeIdentifier;
 use glam::{DVec2, UVec2};
+use graph_craft::application_io::PlatformApplicationIo;
 use graphene_std::raster::color::Color;
 use graphene_std::uuid::NodeId;
 
@@ -20,11 +21,11 @@ pub struct EditorTestUtils {
 }
 
 impl EditorTestUtils {
-	pub fn create() -> Self {
+	pub fn create_with_application_io(application_io: PlatformApplicationIo) -> Self {
 		#[cfg(test)]
 		let _ = env_logger::builder().is_test(true).try_init();
 
-		let (mut editor, runtime) = Editor::new_local_executor();
+		let (mut editor, runtime) = Editor::new_local_executor(application_io);
 
 		editor.handle_message(PortfolioMessage::Init);
 
@@ -33,6 +34,10 @@ impl EditorTestUtils {
 		editor.handle_message(PreferencesMessage::ValidateStorageRoundTrip { enabled: true });
 
 		Self { editor, runtime }
+	}
+
+	pub fn create() -> Self {
+		Self::create_with_application_io(PlatformApplicationIo::default())
 	}
 
 	/// Submit an evaluation to the executor, run the runtime, and process the results.

@@ -30,7 +30,7 @@ impl Editor {
 	}
 
 	#[cfg(any(test, feature = "test-utils"))]
-	pub(crate) fn new_local_executor() -> (Self, crate::node_graph_executor::NodeRuntime) {
+	pub(crate) fn new_local_executor(mut application_io: PlatformApplicationIo) -> (Self, crate::node_graph_executor::NodeRuntime) {
 		let _ = ENVIRONMENT.set(*Editor::environment());
 		graphene_std::uuid::set_uuid_seed(0);
 
@@ -39,7 +39,6 @@ impl Editor {
 			dispatcher: Dispatcher::with_executor(executor),
 		};
 
-		let mut application_io = PlatformApplicationIo::default();
 		application_io.inject_resource_proxy(editor.dispatcher.message_handlers.resource_storage_message_handler.resources());
 		runtime.replace_application_io(application_io);
 
