@@ -29,7 +29,7 @@ impl Editor {
 		Self { dispatcher }
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-utils"))]
 	pub(crate) fn new_local_executor() -> (Self, crate::node_graph_executor::NodeRuntime) {
 		let _ = ENVIRONMENT.set(*Editor::environment());
 		graphene_std::uuid::set_uuid_seed(0);
@@ -59,12 +59,12 @@ impl Editor {
 
 static ENVIRONMENT: OnceLock<Environment> = OnceLock::new();
 impl Editor {
-	#[cfg(not(test))]
+	#[cfg(not(any(test, feature = "test-utils")))]
 	pub fn environment() -> &'static Environment {
 		ENVIRONMENT.get().expect("Editor environment accessed before initialization")
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-utils"))]
 	pub fn environment() -> &'static Environment {
 		&Environment {
 			platform: Platform::Desktop,

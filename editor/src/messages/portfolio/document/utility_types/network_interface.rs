@@ -20,7 +20,7 @@ mod store;
 mod structure;
 mod template;
 mod types;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 mod validation;
 mod view;
 

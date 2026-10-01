@@ -27,7 +27,7 @@ impl NodeRuntimeIO {
 			receiver: response_receiver,
 		}
 	}
-	#[cfg(test)]
+	#[cfg(any(test, feature = "test-utils"))]
 	pub fn with_channels(sender: Sender<GraphRuntimeRequest>, receiver: Receiver<NodeGraphUpdate>) -> Self {
 		Self { sender, receiver }
 	}

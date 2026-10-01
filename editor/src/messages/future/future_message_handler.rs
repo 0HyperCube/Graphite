@@ -73,10 +73,10 @@ pub struct FutureMessageContext {}
 
 #[derive(ExtractField)]
 pub struct FutureMessageHandler {
-	#[cfg_attr(test, expect(dead_code))]
+	#[cfg_attr(any(test, feature = "test-utils"), expect(dead_code))]
 	spawner: Arc<dyn MessageSpawner>,
 	wake: Wake,
-	#[cfg_attr(test, expect(dead_code))]
+	#[cfg_attr(any(test, feature = "test-utils"), expect(dead_code))]
 	results_sender: UnboundedSender<Message>,
 	results_receiver: UnboundedReceiver<Message>,
 }
@@ -121,11 +121,11 @@ impl MessageHandler<FutureMessage, FutureMessageContext> for FutureMessageHandle
 	fn process_message(&mut self, message: FutureMessage, _responses: &mut VecDeque<Message>, _context: FutureMessageContext) {
 		match message {
 			FutureMessage::Await { future } => {
-				#[cfg(not(test))]
+				#[cfg(not(any(test, feature = "test-utils")))]
 				self.spawner.spawn(future.into_future(), self.results_sender.clone(), self.wake.clone());
 
 				// For tests, block on the future to ensure the result is available when validating editor state afterwards.
-				#[cfg(test)]
+				#[cfg(any(test, feature = "test-utils"))]
 				{
 					let message = futures::executor::block_on(future.into_future());
 					_responses.push_back(message);

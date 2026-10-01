@@ -17,6 +17,7 @@ workspace = true
 default = ["gpu"]
 wasm = ["graphene-std/wasm", "interpreted-executor/wasm", "dep:wasm-bindgen"]
 gpu = ["interpreted-executor/gpu", "dep:wgpu-executor"]
+test-utils = []
 
 [dependencies]
 # Local dependencies

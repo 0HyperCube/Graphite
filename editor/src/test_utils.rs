@@ -21,6 +21,7 @@ pub struct EditorTestUtils {
 
 impl EditorTestUtils {
 	pub fn create() -> Self {
+		#[cfg(test)]
 		let _ = env_logger::builder().is_test(true).try_init();
 
 		let (mut editor, runtime) = Editor::new_local_executor();
@@ -367,7 +368,7 @@ impl FrontendMessageTestUtils for FrontendMessage {
 	}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test_prelude {
 	pub use super::FrontendMessageTestUtils;
 	pub use crate::application::Editor;
